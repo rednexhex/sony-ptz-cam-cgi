@@ -1,0 +1,1 @@
+http://10.2.43.185/command/main.cgi?System=reboot

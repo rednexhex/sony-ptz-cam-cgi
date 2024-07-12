@@ -1,0 +1,596 @@
+-- The PluginInfo header contains some important information that Q-Sys Designer will parse when compiled.
+-- Id is a unique ID given to every plugin. While we typically use randomly generated UUID's, you can use anything here so long as it is unique
+
+PluginInfo = {
+	Name = "Sony~Camera (0.0.0.0-master)", -- The tilde here indicates folder structure in the Shematic Elements pane
+	Version = "0.0.0.0-master",
+	Id = "qsysc.sony.camera.cgi.0.0.0.0-master", -- show this is just a unique id. Show some commented out 'fun' unique ids
+	Description = "Plugin for control of an Sony Camera using the CGI protocol",
+	ShowDebug = true
+}
+
+-- Once you've drawn your plugin in Designer, you can determine what colors you use a lot. Save yourself some time by putting them in a table, and then simply calling them later.
+local Colors = {
+	White = {255, 255, 255},
+	Black = {0, 0, 0},
+	Red = {255, 0, 0},
+	Green = {0, 255, 0}
+}
+
+preset_count = 127
+
+pt_speed = "\x08" -- maximum \x11 (17)
+--zoom_speed = "\x07" -- maximum \x07 (7)
+
+function GetColor(props)
+    return Colors.Black
+end
+
+-- We can let users determine some of the plugin properties by exposing them here
+-- While this function can be very useful, it is completely optional and not always needed.
+-- If no Properties are set here, only the position and fill properties of your plugin will show in the Properties pane
+function GetProperties()
+	props = {
+		{
+			Name = "IP Host",
+			Type = "string",
+			Value = "192.168.0.100"
+		},
+		{
+			Name = "Username",
+			Type = "string",
+			Value = ""
+		},
+		{
+			Name = "Password",
+			Type = "string",
+			Value = ""
+		},
+		{
+			Name = "IP Port",
+			Type = "integer",
+			Value = 80,
+			Min = 80,
+			Max = 65535
+		},
+		{
+			Name = "Preset Count",
+			Type = "integer",
+			Value = 6,
+			Min = 1,
+			Max = 64
+		}
+	}
+	return props
+end
+
+-- The below function is optional (like GetProperties() is), but it can allow further customization of what users can and can't do with your plugin.
+-- In this example, when Model 1 is selected in the properties pane, the ability to modify some of the properties will be hidden, only allowing customization with Model 2
+-- Another application of this is if you have different input/output types for different models, and want those properties to be dynamic in the Properties pane
+function RectifyProperties(props)
+	return props
+end
+
+-- The below function is where you will populate the controls for your plugin.
+function GetControls(props)
+	ctls = {
+		-- System Pins
+		{
+			Name = "Online",
+			ControlType = "Indicator",
+			IndicatorType = "Led",
+			PinStyle = "Output",
+			Count = 1,
+			UserPin = true
+		},
+		{
+			Name = "ConnectionState",
+			ControlType = "Indicator",
+			IndicatorType = "Text",
+			PinStyle = "Output",
+			UserPin = true
+		},
+		-- Control Pins
+		--[[{
+			Name = "CAM_Pan-Speed",
+			ControlType = "Knob",
+			ControlUnit = "Percent",
+			Min = 1,
+			Max = 100,
+			UserPin = true,
+			PinStyle = "Both"
+		},
+		{
+			Name = "CAM_Zoom-Speed",
+			ControlType = "Knob",
+			ControlUnit = "Percent",
+			Min = 1,
+			Max = 100,
+			UserPin = true,
+			PinStyle = "Both"
+		},]]
+		{
+			Name = "PanTiltDrive-Up",
+			ControlType = "Button",
+			ButtonType = "Momentary",
+			UserPin = true,
+			PinStyle = "Input"
+		},
+		{
+			Name = "PanTiltDrive-Dn",
+			ControlType = "Button",
+			ButtonType = "Momentary",
+			UserPin = true,
+			PinStyle = "Input"
+		},
+		{
+			Name = "PanTiltDrive-Lt",
+			ControlType = "Button",
+			ButtonType = "Momentary",
+			UserPin = true,
+			PinStyle = "Input"
+		},
+		{
+			Name = "PanTiltDrive-Rt",
+			ControlType = "Button",
+			ButtonType = "Momentary",
+			UserPin = true,
+			PinStyle = "Input"
+		},
+		{
+			Name = "CAM_Zoom-Z+",
+			ControlType = "Button",
+			ButtonType = "Momentary",
+			UserPin = true,
+			PinStyle = "Input"
+		},
+		{
+			Name = "CAM_Zoom-Z-",
+			ControlType = "Button",
+			ButtonType = "Momentary",
+			UserPin = true,
+			PinStyle = "Input"
+		},
+		{
+			Name = "CAM_Memory-Set",
+			ControlType = "Button",
+			ButtonType = "Momentary",
+			UserPin = true,
+			PinStyle = "Input",
+			Count = 128
+		},
+		{
+			Name = "CAM_Memory-Recall",
+			ControlType = "Button",
+			ButtonType = "Momentary",
+			UserPin = true,
+			PinStyle = "Input",
+			Count = 128
+		}
+	}
+	return ctls
+end
+
+-- Variable holding Page Names for ease
+local pagenames = {"System"}
+
+function GetPages(props) -- This function allows you to populate pages in your plugin.
+	pages = {}
+	table.insert(pages, {name = pagenames[1]})
+	return pages
+end
+
+function GetControlLayout(props)
+	local ActiveRemote = props["page_index"].Value
+	preset_count = props["Preset Count"].Value
+
+	local layout = {}
+	local row_size = 6
+
+	local btn_size = {48, 24}
+	local title_size = {row_size * btn_size[1], btn_size[2]}
+	local txt_size = {2 * btn_size[1], btn_size[2]}
+	local status_groupbox_size = {title_size[1], 3 * btn_size[2]}
+	local ptz_groupbox_position = {0, title_size[2] + status_groupbox_size[2] + (0.5 * btn_size[2])}
+	local ptz_groupbox_size = {row_size * btn_size[1], 5 * btn_size[2]}
+	local presets_groupbox_position = {0, ptz_groupbox_position[2] + ptz_groupbox_size[2] + (0.5 * btn_size[2])}
+	local presets_groupbox_size = {
+		row_size * btn_size[1],
+		btn_size[2] + (2 * btn_size[2]) * (math.floor((props["Preset Count"].Value - 1) / row_size) + 1)
+	}
+
+	-- Status Info Section
+	graphics = {
+		{
+			Type = "Header",
+			Text = "Sony PTZ Camera",
+			HTextAlign = "Center",
+			Color = Colors.black,
+			FontSize = 16,
+			Position = {0, 0},
+			Size = title_size
+		},
+		{
+			Type = "GroupBox",
+			Text = "Status",
+			HTextAlign = "Left",
+			Fill = Colors.White,
+			CornerRadius = 8,
+			StrokeColor = Colors.Black,
+			Color = Colors.Black,
+			StrokeWidth = 1,
+			Position = {0, title_size[2]},
+			Size = status_groupbox_size
+		},
+		{
+			Type = "Text",
+			Text = "Online:",
+			Font = "Roboto",
+			FontSize = 12,
+			FontStyle = "Bold",
+			HTextAlign = "Right",
+			Color = Colors.Black,
+			Position = {0, title_size[2] + (0.5 * btn_size[2])},
+			Size = txt_size
+		},
+		{
+			Type = "Text",
+			Text = "IP Address:",
+			Font = "Roboto",
+			FontSize = 12,
+			FontStyle = "Bold",
+			HTextAlign = "Right",
+			Color = Colors.Black,
+			Position = {0, title_size[2] + (1.5 * btn_size[2])},
+			Size = txt_size
+		},
+		--[[{
+			Type = "Text",
+			Text = "Firmware:",
+			Font = "Roboto",
+			FontSize = 12,
+			FontStyle = "Bold",
+			HTextAlign = "Right",
+			Color = Colors.Black,
+			Position = {0, title_size[2] + (2.5 * btn_size[2])},
+			Size = txt_size
+		},]]
+		{
+			Type = "GroupBox", -- This is the overall groupbox that will give the plugin a more 'contained' look
+			Text = "PTZ",
+			HTextAlign = "Left",
+			Fill = Colors.White,
+			CornerRadius = 8,
+			StrokeColor = Colors.Black,
+			Color = Colors.Black,
+			StrokeWidth = 1,
+			Position = ptz_groupbox_position,
+			Size = ptz_groupbox_size
+		},
+		{
+			Type = "Text",
+			Text = "Pan/Tilt:",
+			Font = "Roboto",
+			FontSize = 12,
+			FontStyle = "Bold",
+			HTextAlign = "Right",
+			Color = Colors.Black,
+			Position = {ptz_groupbox_position[1], ptz_groupbox_position[2] + btn_size[2]},
+			Size = txt_size
+		},
+		{
+			Type = "Text",
+			Text = "Zoom:",
+			Font = "Roboto",
+			FontSize = 12,
+			FontStyle = "Bold",
+			HTextAlign = "Right",
+			Color = Colors.Black,
+			Position = {ptz_groupbox_position[1], ptz_groupbox_position[2] + (2 * btn_size[2])},
+			Size = txt_size
+		},
+		--[[{
+			Type = "Text",
+			Text = "Pan/Tilt Speed:",
+			Font = "Roboto",
+			FontSize = 12,
+			FontStyle = "Bold",
+			HTextAlign = "Right",
+			Color = Colors.Black,
+			Position = {ptz_groupbox_position[1], ptz_groupbox_position[2] + (3 * btn_size[2])},
+			Size = txt_size
+		},
+		{
+			Type = "Text",
+			Text = "Zoom Speed:",
+			Font = "Roboto",
+			FontSize = 12,
+			FontStyle = "Bold",
+			HTextAlign = "Right",
+			Color = Colors.Black,
+			Position = {ptz_groupbox_position[1], ptz_groupbox_position[2] + (4 * btn_size[2])},
+			Size = txt_size
+		},]]
+		{
+			Type = "GroupBox", -- This is the overall groupbox that will give the plugin a more 'contained' look
+			Text = "Presets",
+			HTextAlign = "Left",
+			Fill = Colors.White,
+			CornerRadius = 8,
+			StrokeColor = Colors.Black,
+			Color = Colors.Black,
+			StrokeWidth = 1,
+			Position = presets_groupbox_position,
+			Size = presets_groupbox_size
+		}
+	}
+	layout["Online"] = {
+		PrettyName = "Online",
+		Style = "Indicator",
+		Color = {0, 255, 0},
+		OffColor = {200, 0, 0},
+		UnlinkOffColor = true,
+		Margin = 4,
+		Position = {txt_size[1], title_size[2] + (0.5 * btn_size[2])},
+		Size = {btn_size[2], btn_size[2]}
+	}
+	layout["ConnectionState"] = {
+		PrettyName = "Connection State",
+		Style = "Text",
+		HTextAlign = "Left",
+		Padding = 4,
+		StrokeWidth = 0,
+		Position = {txt_size[1], title_size[2] + (1.5 * btn_size[2])},
+		Size = {2 * btn_size[1], btn_size[2]}
+	}
+	--[[layout["FirmwareVersion"] = {
+		PrettyName = "Firmware",
+		Style = "Text",
+		HTextAlign = "Left",
+		Padding = 4,
+		StrokeWidth = 0,
+		Position = {txt_size[1], title_size[2] + (2.5 * btn_size[2])},
+		Size = {2 * btn_size[1], btn_size[2]}
+	}]]
+	-- PTZ section
+	layout["PanTiltDrive-Up"] = {
+		PrettyName = "PTZ~Tilt Up",
+		Legend = "Up",
+		Style = "Button",
+		ButtonStyle = "Momentary",
+		Position = {ptz_groupbox_position[1] + txt_size[1] + (0 * btn_size[1]), ptz_groupbox_position[2] + btn_size[2]},
+		Size = btn_size
+	}
+	layout["PanTiltDrive-Dn"] = {
+		PrettyName = "PTZ~Tilt Down",
+		Legend = "Down",
+		Style = "Button",
+		ButtonStyle = "Momentary",
+		Position = {ptz_groupbox_position[1] + txt_size[1] + (1 * btn_size[1]), ptz_groupbox_position[2] + btn_size[2]},
+		Size = btn_size
+	}
+	layout["PanTiltDrive-Lt"] = {
+		PrettyName = "PTZ~Pan Left",
+		Legend = "Left",
+		Style = "Button",
+		ButtonStyle = "Momentary",
+		Position = {ptz_groupbox_position[1] + txt_size[1] + (2 * btn_size[1]), ptz_groupbox_position[2] + btn_size[2]},
+		Size = btn_size
+	}
+	layout["PanTiltDrive-Rt"] = {
+		PrettyName = "PTZ~Pan Right",
+		Legend = "Right",
+		Style = "Button",
+		ButtonStyle = "Momentary",
+		Position = {ptz_groupbox_position[1] + txt_size[1] + (3 * btn_size[1]), ptz_groupbox_position[2] + btn_size[2]},
+		Size = btn_size
+	}
+	layout["CAM_Zoom-Z+"] = {
+		PrettyName = "PTZ~Zoom In",
+		Legend = "In",
+		Style = "Button",
+		ButtonStyle = "Momentary",
+		Position = {ptz_groupbox_position[1] + txt_size[1] + (0 * btn_size[1]), ptz_groupbox_position[2] + (2 * btn_size[2])},
+		Size = btn_size
+	}
+	layout["CAM_Zoom-Z-"] = {
+		PrettyName = "PTZ~Zoom Out",
+		Legend = "Out",
+		Style = "Button",
+		ButtonStyle = "Momentary",
+		Position = {ptz_groupbox_position[1] + txt_size[1] + (1 * btn_size[1]), ptz_groupbox_position[2] + (2 * btn_size[2])},
+		Size = btn_size
+	}
+	--[[layout["CAM_Pan-Speed"] = {
+		PrettyName = "PTZ Speed~Pan/Tilt",
+		Style = "Text Field",
+		Margin = 2,
+		Position = {ptz_groupbox_position[1] + txt_size[1] + 0 * btn_size[1], ptz_groupbox_position[2] + (3 * btn_size[2])},
+		Size = {2 * btn_size[1], btn_size[2]}
+	}
+	layout["CAM_Zoom-Speed"] = {
+		PrettyName = "PTZ Speed~Zoom",
+		Style = "Text Field",
+		Margin = 2,
+		Position = {ptz_groupbox_position[1] + txt_size[1] + 0 * btn_size[1], ptz_groupbox_position[2] + (4 * btn_size[2])},
+		Size = {2 * btn_size[1], btn_size[2]}
+	}]]
+	-- Presets Section
+	for i = 1, preset_count do -- For each preset
+		local row = math.floor((i - 1) / row_size) + 1
+		local column = i - (row - 1) * row_size
+		layout["CAM_Memory-Recall " .. i] = {
+			PrettyName = "Preset Recall~" .. (i - 1),
+			Style = "Button",
+			Color = Colors.Green,
+			Legend = "Recall " .. (i - 1),
+			Position = {
+				presets_groupbox_position[1] + btn_size[1] * (column - 1),
+				presets_groupbox_position[2] + (2 * btn_size[2] * row) - btn_size[2]
+			},
+			Size = btn_size
+		}
+		layout["CAM_Memory-Set " .. i] = {
+			PrettyName = "Preset Save~" .. (i - 1),
+			Style = "Button",
+			Color = Colors.Red,
+			Legend = "Save " .. (i - 1),
+			Position = {
+				presets_groupbox_position[1] + btn_size[1] * (column - 1),
+				presets_groupbox_position[2] + (2 * btn_size[2] * row)
+			},
+			Size = btn_size
+		}
+	end
+	return layout, graphics
+end
+
+-- Components provide a way to save or retain certain settings without necessarily displaying it in another control such as a combobox.
+-- For example, the when someone hits the "Save" button on this plugin, it saves the RGB values in the "rgb_storage" component below.
+-- This allows us to do things 'under the hood' which gives the plugin a much sleeker feel.
+function GetComponents(props)
+	return {}
+end
+
+if Controls then
+	-- This is the area where you would put your 'Runtime' code, or the 'control' aspect of your plugin.
+	-- Once you are confident in your script, simply copy and paste that script here, and then you can fully test the plugin completely
+	-- Don't forget to comment out your code pin and hide the debug before distributing!
+
+	function setConnState(msg)
+		Controls["ConnectionState"].String = string.format("[%s:%d] %s",Properties["IP Host"].Value,Properties["IP Port"].Value,msg)
+	end
+
+	setConnState("Connecting")
+	-- Create and setup the Communications Timeout
+	timerComms = Timer.New()
+	timerComms.EventHandler = function(timer)
+		timer:Stop()
+		Controls.Online.Boolean = false
+		setConnState("Timed Out")
+	end
+
+	-- Create and setup Polling
+	timerPoll = Timer.New()
+	timerPoll.EventHandler = function(timer)
+		fnPoll()
+	end
+
+	function fnInitPoll()
+		timerPoll:Stop()
+		timerPoll:Start(20)
+	end
+
+	function httpFeedbackHandler(tbl, code, data, err, headers)
+		print(string.format( "HTTP response from '%s': Return Code=%i; Error=%s", tbl.Url, code, err or "None" ) )
+		if code == 200 then
+			timerComms:Stop()
+			Controls.Online.Boolean = true
+			setConnState("Connected")
+			timerComms:Start(45)
+		end
+		-- Process 'data'
+	end
+
+	function httpCommandHandler(tbl, code, data, err, headers)
+		print(string.format( "HTTP response from '%s': Return Code=%i; Error=%s", tbl.Url, code, err or "None" ) )
+		if code == 204 then
+			timerComms:Stop()
+			Controls.Online.Boolean = true
+			timerComms:Start(45)
+		end
+	end
+
+	function fnPoll()
+		-- Poll the General Info
+		HttpClient.Download { 
+			Url = string.format("http://%s/command/inquiry.cgi?inq=ptzf",Properties["IP Host"].Value),
+			Timeout = 5,
+			User = Properties["Username"].Value,
+			Password = Properties["Password"].Value,
+			EventHandler = httpFeedbackHandler -- Set Connection ON / Timer start here
+		  }
+		-- Poll the PTZF info
+		HttpClient.Download { 
+			Url = string.format("http://%s/command/inquiry.cgi?inq=ptzf",Properties["IP Host"].Value),
+			Timeout = 5,
+			User = Properties["Username"].Value,
+			Password = Properties["Password"].Value,
+			EventHandler = httpFeedbackHandler
+		  }
+		  fnInitPoll()
+	end
+
+	-- Data Sending Helper Function
+	function fnFireForget(path)
+		-- Do without processing
+		HttpClient.Download { 
+			Url = string.format("http://%s/%s",Properties["IP Host"].Value,path),
+			Timeout = 5,
+			User = Properties["Username"].Value,
+			Password = Properties["Password"].Value,
+			EventHandler = httpCommandHandler
+		  }
+		  fnInitPoll()
+	end
+
+	function goPanTilt(dir)
+		if dir == "" then -- Stop
+			fnFireForget("command/ptzf.cgi?cancel=on") -- Stop
+		else -- Move
+			fnFireForget(string.format("command/ptzf.cgi?move=%s,10",dir)) -- Move
+		end
+	end
+
+	function goZoom(dir)
+		if dir == "" then
+			fnFireForget("command/ptzf.cgi?cancel=on") -- Stop
+		else
+			fnFireForget(string.format("command/ptzf.cgi?move=%s,4",dir)) -- Move
+		end
+	end
+	for k, v in pairs(Controls) do
+		if k:sub(1, #"PanTiltDrive-") == "PanTiltDrive-" then
+			v.EventHandler = function(changedControl)
+				if changedControl.Boolean == true then
+					if k:sub(-2, -1) == "Up" then
+						goPanTilt("up") -- Up
+					elseif k:sub(-2, -1) == "Dn" then
+						goPanTilt("down") -- Down
+					elseif k:sub(-2, -1) == "Lt" then
+						goPanTilt("left") -- Left
+					elseif k:sub(-2, -1) == "Rt" then
+						goPanTilt("right") -- Right
+					end
+				else
+					goPanTilt("") -- Stop
+				end
+			end
+		elseif k:sub(1, #"CAM_Zoom-") == "CAM_Zoom-" then
+			v.EventHandler = function(changedControl)
+				if changedControl.Boolean == true then
+					if k:sub(-2, -1) == "Z+" then
+						goZoom("tele") -- In
+					elseif k:sub(-2, -1) == "Z-" then
+						goZoom("wide") -- Out
+					end
+				else
+					goZoom("") -- Stop
+				end
+			end
+		end
+	end
+	for i = 1, preset_count do
+		Controls["CAM_Memory-Set"][i].EventHandler = function()
+			fnFireForget(string.format("command/presetposition.cgi?PresetSet=%d,Preset%0d,on",i,i))
+		end
+		Controls["CAM_Memory-Recall"][i].EventHandler = function()
+			fnFireForget(string.format("command/presetposition.cgi?PresetCall=%d,%d",i,10))
+		end
+	end
+	--[[Controls["CAM_Pan-Speed"].EventHandler = function()
+		pt_speed = string.format("%X", Controls["CAM_Pan-Speed"].Value)
+		print(pt_speed)
+	end]]
+	fnPoll()
+end
